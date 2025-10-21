@@ -1,0 +1,22 @@
+{
+    "node_name": "db_client",
+    "node_port": 14552,
+    "master_core_host": "localhost",
+    "master_core_port": 14550,
+    "direct_communication": true,
+    "emergency_nodes": ["can_controller"],
+    
+    "mongodb_host": "localhost",
+    "mongodb_port": 27017,
+    "database_name": "OBSDB",
+    "data_ttl_days": 7,
+    "backup_enabled": true,
+    "backup_interval": 3600,
+    
+    "known_nodes": {
+        "can_controller": {
+            "host": "localhost",
+            "port": 14551
+        }
+    }
+}

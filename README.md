@@ -1,86 +1,95 @@
-# Welcome to Our Internal Development Platform
+# DB Client Node
 
-This documentation is your guide to building and deploying services using our standardized IDP.
+A specialized node for database operations in the OBS01PY system.
 
----
+## Features
 
-### 1. The Service Catalog
+- **MongoDB Operations**: Full CRUD operations
+- **Data Backup**: Automatic and manual backup capabilities
+- **Data Restore**: Restore from backup files
+- **TTL Management**: Automatic data expiration
+- **Query Processing**: Advanced data querying
+- **Direct Communication**: Emergency and critical messaging
 
-Our IDP uses Backstage's Service Catalog for all services. To get your service listed here, ensure your repository has a `catalog-info.yaml` file at its root.
+## Installation
 
----
-
-### 2. Getting Started: Creating a New Service
-
-To create a new service, do not start from scratch. Use our automated provisioning action.
-
-Go to the **`idp-admin`** repository in our GitHub organization.
-Click on the **Actions** tab.
-Select the **`Create New Repository from Template`** workflow and click **`Run workflow`**.
-Provide a name for your new service, and our automation will create a new repository with all the necessary files and CI/CD pipelines configured for you.
-
----
-
-### 3. Development Workflow and Environments
-
-Our IDP uses a Git-based workflow with automated deployments.
-
-#### **Sandbox Environments**
-
-**Purpose:** Sandbox environments are temporary, isolated environments for testing a new feature.
-
-**How it works:** When you open a Pull Request, a GitHub Actions workflow is automatically triggered. It deploys your code to a unique sandbox URL. The URL will be posted as a comment on your PR.
-
-**Access:** Use this URL to test your feature, share it with others for review, and ensure it works as expected before merging.
-
-**Cleanup:** The sandbox environment is automatically deleted when the Pull Request is closed or merged.
-
-**Visual Flow:**
-```mermaid
-graph TD
-    A[New Pull Request] --> B[CI Workflow Runs - ci.yml]
-    B --> C{CI Checks Pass?}
-    C -- No --> D[Pull Request Fails]
-    C -- Yes --> E[Deploy to Sandbox Environment]
-    E --> F[Comment on PR with URL]
-    G[PR Closed or Merged] --> H[Cleanup Sandbox Environment]
+```bash
+pip install -r requirements.txt
 ```
-#### **Production Deployments (Red/Green)**
-Our production deployment strategy is designed for zero-downtime releases.
 
-**Step 1**: Merge to release Branch: Once your feature has been tested in a sandbox and approved, merge your changes into the release branch. This triggers a GitHub Actions workflow to deploy your code to the "Red" (inactive) production environment.
+## Configuration
 
-**Step 2**: Validation: After the deployment is complete, a member of the Platform-Ops team will manually validate the "Red" environment.
+Edit `config.json` to configure:
+- MongoDB connection settings
+- Database name and TTL settings
+- Backup configuration
+- Node communication ports
 
-**Step 3**: The Switch: The Platform-Ops team will then manually trigger a separate workflow to switch traffic from "Green" to "Red." The old "Green" environment is then available for the next deployment.
+## Usage
 
-**Visual Flow:**
-```mermaid
-sequenceDiagram
-    participant Developer
-    participant GitHub
-    participant Platform-Ops
-    
-    Developer->>GitHub: Pushes code to feature branch
-    GitHub->>GitHub: Triggers CI Workflow (ci.yml)
-    GitHub-->>Developer: CI Status (Pass/Fail)
-    GitHub->>GitHub: Triggers Sandbox Deployment (sandbox.yml)
-    GitHub-->>Developer: Comments with Sandbox URL on PR
-    Developer->>GitHub: Gets PR reviewed and approved
-    Developer->>GitHub: Merges PR into release branch
-    GitHub->>GitHub: Triggers Production Deployment (deploy.yml)
-    GitHub->>GitHub: Deploys code to "Red" environment
-    GitHub-->>Platform-Ops: Notifies of "Red" deployment success
-    Platform-Ops->>Platform-Ops: Manually validates "Red" environment
-    Platform-Ops->>GitHub: Manually triggers "The Switch" workflow
-    GitHub->>GitHub: Updates routing/traffic switch
-    GitHub-->>Developer: Traffic is now on new version
+### Run as standalone node:
+```bash
+python src/db_client/db_client_node.py
 ```
-### 4. Retiring a Service
-When a service is no longer needed, follow these steps to retire it properly:
 
-1. Inform the Platform-Ops team and your stakeholders of the plan.
-2. Trigger the archive workflow via GitHub Actions to de-provision all cloud resources.
-3. Archive the GitHub repository in the repository's settings.
+### Run as daemon:
+```bash
+python src/db_client/db_client_node.py --daemon
+```
 
-The archived service will remain in the Backstage catalog but will be marked as archived for future reference.
+### With custom config:
+```bash
+python src/db_client/db_client_node.py --config my_config.json
+```
+
+## Database Operations
+
+### Insert Data
+```python
+# Via direct communication
+node.insert_data("NodeHeartbeat", {
+    "node_id": "engine_001",
+    "status": "running",
+    "timestamp": datetime.now()
+})
+```
+
+### Query Data
+```python
+# Query recent heartbeat data
+results = node.query_data("NodeHeartbeat", 
+    {"status": "running"}, 
+    limit=50
+)
+```
+
+### Backup Operations
+```bash
+# Manual backup via UDP command
+python ../../src/onboard_core/obs_client.py db_command backup_database
+```
+
+## Testing
+
+```bash
+# Unit tests
+pytest tests/ -v
+
+# Integration tests
+python tests/test_db_integration.py
+```
+
+## API
+
+### Commands
+- `db_command`: Database management operations
+- `query_data`: Query database collections
+- `backup_database`: Trigger manual backup
+- `restore_database`: Restore from backup
+
+### Status
+Returns database-specific status including:
+- Connection status
+- Backup status
+- TTL settings
+- Database statistics
