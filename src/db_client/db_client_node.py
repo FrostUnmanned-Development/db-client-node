@@ -9,6 +9,7 @@ import threading
 import time
 import logging
 import datetime
+import uuid
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import json
@@ -57,7 +58,7 @@ class DBClientNode(BaseNode):
         self.backup_running = False
         
         # Register DB-specific handlers
-        self.register_handler("db_command", self._handle_db_command)
+        self.register_handler("command", self._handle_db_command)
         self.register_handler("query_data", self._handle_query_data)
         self.register_handler("backup_database", self._handle_backup)
         self.register_handler("restore_database", self._handle_restore)
@@ -83,6 +84,18 @@ class DBClientNode(BaseNode):
         self._stop_backup()
         self._disconnect_database()
         super().stop()
+    
+    def run_daemon(self):
+        """Main daemon loop for DB client"""
+        logger.info("DB Client Daemon started successfully")
+        try:
+            while self.listening:
+                time.sleep(1)  # Keep the daemon alive
+        except KeyboardInterrupt:
+            logger.info("Shutdown signal received")
+        finally:
+            self.stop()
+            logger.info("DB Client Daemon stopped")
     
     def _connect_database(self) -> bool:
         """Connect to MongoDB database"""
@@ -184,6 +197,47 @@ class DBClientNode(BaseNode):
             self._drop_collection(message.payload.get("collection_name"))
         elif command == "get_stats":
             self._get_database_stats()
+        elif command == "insert_one":
+            collection_name = message.payload.get("collection")
+            data = message.payload.get("data")
+            if collection_name and data:
+                try:
+                    # Add TTL expiration to data
+                    from datetime import timedelta
+                    expiration_date = datetime.datetime.now() + timedelta(days=self.data_ttl_days)
+                    data["ttl_expiration"] = expiration_date.isoformat()
+                    
+                    result = self.database[collection_name].insert_one(data)
+                    logger.info(f"Document inserted in {collection_name} with ID: {result.inserted_id}")
+                    
+                    # Send acknowledgment back to sender
+                    response = NodeMessage(
+                        message_id=str(uuid.uuid4()),
+                        type=MessageType.RESPONSE,
+                        priority=Priority.NORMAL,
+                        source="db_client",
+                        destination=message.source,
+                        payload={"status": "success", "inserted_id": str(result.inserted_id)},
+                        timestamp=datetime.datetime.now(),
+                        requires_ack=False
+                    )
+                    self._send_message(response, addr)
+                except Exception as e:
+                    logger.error(f"Error inserting document: {e}")
+                    # Send error response
+                    response = NodeMessage(
+                        message_id=str(uuid.uuid4()),
+                        type=MessageType.RESPONSE,
+                        priority=Priority.NORMAL,
+                        source="db_client",
+                        destination=message.source,
+                        payload={"status": "error", "message": str(e)},
+                        timestamp=datetime.datetime.now(),
+                        requires_ack=False
+                    )
+                    self._send_message(response, addr)
+            else:
+                logger.error("Missing collection or data parameters for insert_one")
     
     def _handle_query_data(self, message: NodeMessage, addr: tuple):
         """Handle data query requests"""
@@ -299,6 +353,8 @@ class DBClientNode(BaseNode):
 def main():
     """Main entry point for DB Client Node"""
     import argparse
+    import sys
+    import os
     
     parser = argparse.ArgumentParser(description="DB Client Node")
     parser.add_argument("--config", default="config.json", help="Configuration file")
@@ -337,29 +393,44 @@ def main():
     node = DBClientNode(config)
     
     if args.daemon:
-        # Run as daemon
-        import daemon
-        from daemon.pidfile import PIDLockFile
+        # Run as daemon using simple fork approach
+        import os
+        import sys
         
-        pidfile = PIDLockFile('/tmp/db_client_node.pid')
+        # Fork the process
+        try:
+            pid = os.fork()
+            if pid > 0:
+                # Parent process - exit
+                sys.exit(0)
+        except OSError as e:
+            logger.error(f"Failed to fork: {e}")
+            sys.exit(1)
         
-        with daemon.DaemonContext(pidfile=pidfile):
-            if node.start():
-                try:
-                    while True:
-                        time.sleep(1)
-                except KeyboardInterrupt:
-                    pass
-            node.stop()
-    else:
-        # Run in foreground
+        # Child process - continue
+        os.setsid()  # Create new session
+        os.chdir("/")  # Change to root directory
+        
+        # Write PID file
+        with open('/tmp/db_client_node.pid', 'w') as f:
+            f.write(str(os.getpid()))
+        
         if node.start():
             try:
                 while True:
                     time.sleep(1)
             except KeyboardInterrupt:
                 pass
-        node.stop()
+        else:
+            logger.error("Failed to start DB Client Node")
+            sys.exit(1)
+    else:
+        # Run in foreground
+        if node.start():
+            node.run_daemon()
+        else:
+            logger.error("Failed to start DB Client Node")
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()
