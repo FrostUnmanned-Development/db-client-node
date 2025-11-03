@@ -289,88 +289,144 @@ class DBClientNode(BaseNode):
             self._convert_objectids(results)
             
             # Send success response
+            response_payload = {
+                "status": "success",
+                "collection": collection_name,
+                "query_results": results,
+                "count": len(results),
+                "query_params": {
+                    "filter": query_filter,
+                    "sort": sort_spec,
+                    "limit": limit,
+                    "skip": skip
+                }
+            }
+            
+            # Echo back request_id if present (for Master Core async callback tracking)
+            request_id = message.payload.get("request_id")
+            if request_id:
+                response_payload["request_id"] = request_id
+            
             response = NodeMessage(
                 message_id=str(uuid.uuid4()),
                 type=MessageType.RESPONSE,
                 priority=Priority.NORMAL,
                 source=self.node_name,
                 destination=message.source,
-                payload={
-                    "status": "success",
-                    "collection": collection_name,
-                    "query_results": results,
-                    "count": len(results),
-                    "query_params": {
-                        "filter": query_filter,
-                        "sort": sort_spec,
-                        "limit": limit,
-                        "skip": skip
-                    }
-                },
+                payload=response_payload,
                 timestamp=time.time(),
                 requires_ack=False
             )
-            self._send_message(response, addr)
+            
+            # If responding to master_core, use its IPC server address, not the ephemeral port
+            if message.source == "master_core":
+                # Master Core IPC server is on port 14551 (not the UDP server on 14550)
+                master_core_addr = (self.master_core_host, 14551)
+                logger.info(f"DEBUG: Sending response to Master Core IPC server at {master_core_addr} (source: {message.source})")
+                self._send_message(response, master_core_addr)
+                logger.info(f"DEBUG: Response sent to Master Core, request_id: {request_id}")
+            else:
+                # For other nodes, use the address from the received message
+                self._send_message(response, addr)
             logger.info(f"Query executed successfully on {collection_name}: {len(results)} documents")
             
         except ValueError as e:
             # Parameter validation error
+            error_payload = {
+                "status": "error",
+                "error_type": "validation_error",
+                "message": str(e),
+                "collection": message.payload.get("collection", "unknown")
+            }
+            
+            # Echo back request_id if present
+            request_id = message.payload.get("request_id")
+            if request_id:
+                error_payload["request_id"] = request_id
+            
             error_response = NodeMessage(
                 message_id=str(uuid.uuid4()),
                 type=MessageType.RESPONSE,
                 priority=Priority.NORMAL,
                 source=self.node_name,
                 destination=message.source,
-                payload={
-                    "status": "error",
-                    "error_type": "validation_error",
-                    "message": str(e),
-                    "collection": message.payload.get("collection", "unknown")
-                },
+                payload=error_payload,
                 timestamp=time.time(),
                 requires_ack=False
             )
-            self._send_message(error_response, addr)
+            
+            # If responding to master_core, use its IPC server address
+            if message.source == "master_core":
+                master_core_addr = (self.master_core_host, 14551)
+                self._send_message(error_response, master_core_addr)
+            else:
+                self._send_message(error_response, addr)
             logger.error(f"Query validation error: {e}")
             
         except ConnectionError as e:
             # Database connection error
+            error_payload = {
+                "status": "error",
+                "error_type": "connection_error",
+                "message": str(e),
+                "collection": message.payload.get("collection", "unknown")
+            }
+            
+            # Echo back request_id if present
+            request_id = message.payload.get("request_id")
+            if request_id:
+                error_payload["request_id"] = request_id
+            
             error_response = NodeMessage(
                 message_id=str(uuid.uuid4()),
                 type=MessageType.RESPONSE,
                 priority=Priority.NORMAL,
                 source=self.node_name,
                 destination=message.source,
-                payload={
-                    "status": "error",
-                    "error_type": "connection_error",
-                    "message": str(e),
-                    "collection": message.payload.get("collection", "unknown")
-                },
+                payload=error_payload,
                 timestamp=time.time(),
                 requires_ack=False
             )
-            self._send_message(error_response, addr)
+            
+            # If responding to master_core, use its IPC server address
+            if message.source == "master_core":
+                master_core_addr = (self.master_core_host, 14551)
+                self._send_message(error_response, master_core_addr)
+            else:
+                self._send_message(error_response, addr)
             logger.error(f"Query connection error: {e}")
             
         except Exception as e:
             # Generic database error
+            error_payload = {
+                "status": "error",
+                "error_type": "database_error",
+                "message": str(e),
+                "collection": message.payload.get("collection", "unknown")
+            }
+            
+            # Echo back request_id if present
+            request_id = message.payload.get("request_id")
+            if request_id:
+                error_payload["request_id"] = request_id
+            
             error_response = NodeMessage(
                 message_id=str(uuid.uuid4()),
                 type=MessageType.RESPONSE,
                 priority=Priority.NORMAL,
                 source=self.node_name,
                 destination=message.source,
-                payload={
-                    "status": "error",
-                    "error_type": "database_error",
-                    "message": str(e),
-                    "collection": message.payload.get("collection", "unknown")
-                },
+                payload=error_payload,
                 timestamp=time.time(),
                 requires_ack=False
             )
-            self._send_message(error_response, addr)
+            
+            # If responding to master_core, use its IPC server address
+            if message.source == "master_core":
+                master_core_addr = (self.master_core_host, 14551)
+                self._send_message(error_response, master_core_addr)
+            else:
+                self._send_message(error_response, addr)
             logger.error(f"Query failed: {e}", exc_info=True)
     
     def _convert_objectids(self, documents: List[Dict[str, Any]]):
