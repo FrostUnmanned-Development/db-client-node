@@ -66,13 +66,10 @@ The DB Client communicates with other nodes via standardized IPC messages:
 
 ### Incoming Commands:
 - `insert_one`: Insert a single document into specified collection
-- `insert_many`: Insert multiple documents into specified collection
-- `find_one`: Find a single document with optional filtering
-- `find_many`: Find multiple documents with filtering and pagination
-- `update_one`: Update a single document
-- `update_many`: Update multiple documents
-- `delete_one`: Delete a single document
-- `delete_many`: Delete multiple documents
+- `query_data`: Query documents with FILTER and SORT support
+- `create_collection`: Create a new collection
+- `drop_collection`: Delete a collection
+- `get_stats`: Get database statistics
 - `backup_database`: Trigger manual database backup
 - `restore_database`: Restore database from backup
 
@@ -124,17 +121,53 @@ ipc_message = {
 }
 ```
 
-### Query Data
+### Query Data (with FILTER and SORT)
 ```python
-# Query recent heartbeat data
+# Query with filter and sort
 query_message = {
+    "message_id": "unique-id",
     "type": "command",
+    "priority": 2,
+    "source": "master_core",
+    "destination": "db_client",
     "payload": {
-        "command": "find_many",
-        "collection": "NodeHeartbeat",
-        "filter": {"status": "running"},
+        "command": "query_data",
+        "collection": "System",
+        "query": {"status": "ONLINE"},  # MongoDB filter
+        "sort": [("startuptime", -1)],   # List of (field, direction) tuples
         "limit": 50,
-        "sort": [("timestamp", -1)]
+        "skip": 0
+    },
+    "timestamp": 1720100000.0,
+    "requires_ack": False
+}
+```
+
+**Query Parameters:**
+- `collection` (required): Collection name to query
+- `query` (optional): MongoDB filter dictionary (default: {})
+- `sort` (optional): List of tuples `[("field", direction)]` where direction is 1 (asc) or -1 (desc)
+- `limit` (optional): Maximum documents to return (default: 100)
+- `skip` (optional): Number of documents to skip for pagination (default: 0)
+
+**Response Format:**
+```python
+{
+    "message_id": "response-id",
+    "type": "response",
+    "source": "db_client",
+    "destination": "requester",
+    "payload": {
+        "status": "success",  # or "error"
+        "collection": "System",
+        "query_results": [...],  # List of documents
+        "count": 5,
+        "query_params": {
+            "filter": {...},
+            "sort": [...],
+            "limit": 50,
+            "skip": 0
+        }
     }
 }
 ```

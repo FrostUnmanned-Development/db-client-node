@@ -238,34 +238,160 @@ class DBClientNode(BaseNode):
                     self._send_message(response, addr)
             else:
                 logger.error("Missing collection or data parameters for insert_one")
+        elif command == "query_data":
+            # Delegate to dedicated query handler
+            self._handle_query_data(message, addr)
     
     def _handle_query_data(self, message: NodeMessage, addr: tuple):
-        """Handle data query requests"""
-        collection_name = message.payload.get("collection")
-        query = message.payload.get("query", {})
-        limit = message.payload.get("limit", 100)
+        """Handle data query requests with FILTER and SORT support
         
+        Expected payload:
+        {
+            "collection": str,
+            "query": dict (MongoDB filter),
+            "sort": list of tuples [(field, direction)],  # e.g., [("timestamp", -1)]
+            "limit": int (default: 100),
+            "skip": int (default: 0)
+        }
+        """
         try:
-            collection = self.database[collection_name]
-            results = list(collection.find(query).limit(limit))
+            # Validate required parameters
+            collection_name = message.payload.get("collection")
+            if not collection_name:
+                raise ValueError("Missing required parameter: 'collection'")
             
-            # Send results back
+            if not self.connected:
+                raise ConnectionError("Database not connected")
+            
+            # Extract query parameters with defaults
+            query_filter = message.payload.get("query", {})
+            sort_spec = message.payload.get("sort", [])
+            limit = message.payload.get("limit", 100)
+            skip = message.payload.get("skip", 0)
+            
+            # Build MongoDB query with extensible pattern
+            collection = self.database[collection_name]
+            mongo_query = collection.find(query_filter)
+            
+            # Apply sort if specified (extensible for future features)
+            if sort_spec:
+                # MongoDB sort accepts list of tuples directly
+                # sort_spec: [("field1", 1), ("field2", -1)]
+                mongo_query = mongo_query.sort(sort_spec)
+            
+            # Apply pagination
+            if skip > 0:
+                mongo_query = mongo_query.skip(skip)
+            mongo_query = mongo_query.limit(limit)
+            
+            # Execute query and convert ObjectId to strings
+            results = list(mongo_query)
+            self._convert_objectids(results)
+            
+            # Send success response
             response = NodeMessage(
-                id=str(uuid.uuid4()),
+                message_id=str(uuid.uuid4()),
                 type=MessageType.RESPONSE,
                 priority=Priority.NORMAL,
                 source=self.node_name,
                 destination=message.source,
                 payload={
+                    "status": "success",
+                    "collection": collection_name,
                     "query_results": results,
-                    "count": len(results)
+                    "count": len(results),
+                    "query_params": {
+                        "filter": query_filter,
+                        "sort": sort_spec,
+                        "limit": limit,
+                        "skip": skip
+                    }
                 },
-                timestamp=time.time()
+                timestamp=time.time(),
+                requires_ack=False
             )
             self._send_message(response, addr)
+            logger.info(f"Query executed successfully on {collection_name}: {len(results)} documents")
+            
+        except ValueError as e:
+            # Parameter validation error
+            error_response = NodeMessage(
+                message_id=str(uuid.uuid4()),
+                type=MessageType.RESPONSE,
+                priority=Priority.NORMAL,
+                source=self.node_name,
+                destination=message.source,
+                payload={
+                    "status": "error",
+                    "error_type": "validation_error",
+                    "message": str(e),
+                    "collection": message.payload.get("collection", "unknown")
+                },
+                timestamp=time.time(),
+                requires_ack=False
+            )
+            self._send_message(error_response, addr)
+            logger.error(f"Query validation error: {e}")
+            
+        except ConnectionError as e:
+            # Database connection error
+            error_response = NodeMessage(
+                message_id=str(uuid.uuid4()),
+                type=MessageType.RESPONSE,
+                priority=Priority.NORMAL,
+                source=self.node_name,
+                destination=message.source,
+                payload={
+                    "status": "error",
+                    "error_type": "connection_error",
+                    "message": str(e),
+                    "collection": message.payload.get("collection", "unknown")
+                },
+                timestamp=time.time(),
+                requires_ack=False
+            )
+            self._send_message(error_response, addr)
+            logger.error(f"Query connection error: {e}")
             
         except Exception as e:
-            logger.error(f"Query failed: {e}")
+            # Generic database error
+            error_response = NodeMessage(
+                message_id=str(uuid.uuid4()),
+                type=MessageType.RESPONSE,
+                priority=Priority.NORMAL,
+                source=self.node_name,
+                destination=message.source,
+                payload={
+                    "status": "error",
+                    "error_type": "database_error",
+                    "message": str(e),
+                    "collection": message.payload.get("collection", "unknown")
+                },
+                timestamp=time.time(),
+                requires_ack=False
+            )
+            self._send_message(error_response, addr)
+            logger.error(f"Query failed: {e}", exc_info=True)
+    
+    def _convert_objectids(self, documents: List[Dict[str, Any]]):
+        """Convert MongoDB ObjectId and datetime to JSON-serializable types (recursive)
+        
+        This method recursively converts all ObjectId instances to strings and
+        datetime objects to ISO format strings to ensure JSON serialization compatibility.
+        """
+        from bson import ObjectId
+        
+        for doc in documents:
+            if isinstance(doc, dict):
+                for key, value in doc.items():
+                    if isinstance(value, ObjectId):
+                        doc[key] = str(value)
+                    elif isinstance(value, datetime.datetime):
+                        doc[key] = value.isoformat()
+                    elif isinstance(value, dict):
+                        self._convert_objectids([value])
+                    elif isinstance(value, list):
+                        self._convert_objectids(value)
     
     def _handle_backup(self, message: NodeMessage, addr: tuple):
         """Handle backup requests"""
