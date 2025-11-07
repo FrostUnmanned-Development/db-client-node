@@ -202,10 +202,12 @@ class DBClientNode(BaseNode):
             data = message.payload.get("data")
             if collection_name and data:
                 try:
-                    # Add TTL expiration to data
-                    from datetime import timedelta
-                    expiration_date = datetime.datetime.now() + timedelta(days=self.data_ttl_days)
-                    data["ttl_expiration"] = expiration_date.isoformat()
+                    # Ensure TTL index exists on collection
+                    self._ensure_ttl_index(collection_name)
+                    
+                    # Add created_at field for TTL (MongoDB standard pattern)
+                    # Use UTC time for consistency
+                    data["created_at"] = datetime.datetime.utcnow()
                     
                     result = self.database[collection_name].insert_one(data)
                     logger.info(f"Document inserted in {collection_name} with ID: {result.inserted_id}")
@@ -481,20 +483,199 @@ class DBClientNode(BaseNode):
         except Exception as e:
             logger.error(f"Restore failed: {e}")
     
-    def insert_data(self, collection_name: str, data: Dict[str, Any]) -> bool:
-        """Insert data into collection with TTL"""
+    def _ensure_ttl_index(self, collection_name: str) -> bool:
+        """Ensure TTL index exists on collection's created_at field
+        
+        Creates a TTL index on the 'created_at' field if it doesn't exist.
+        The index will automatically expire documents after data_ttl_days.
+        
+        Args:
+            collection_name: Name of the collection
+            
+        Returns:
+            True if index exists or was created successfully, False otherwise
+        """
         try:
             if not self.connected:
                 return False
             
-            # Add TTL expiration
-            expiration_date = datetime.datetime.now() + datetime.timedelta(days=self.data_ttl_days)
-            data["ttl_expiration"] = expiration_date
+            collection = self.database[collection_name]
+            
+            # Convert TTL days to seconds (MongoDB TTL uses seconds)
+            expire_after_seconds = self.data_ttl_days * 86400  # days * seconds per day
+            
+            # Check if TTL index already exists
+            indexes = collection.list_indexes()
+            ttl_index_exists = False
+            for index in indexes:
+                if index.get("name") == "created_at_1":
+                    # Check if it's a TTL index
+                    if "expireAfterSeconds" in index:
+                        # Update if TTL value changed
+                        if index["expireAfterSeconds"] != expire_after_seconds:
+                            logger.info(f"Updating TTL index on {collection_name} from {index['expireAfterSeconds']}s to {expire_after_seconds}s")
+                            # Use collMod to update TTL value
+                            self.database.command({
+                                "collMod": collection_name,
+                                "index": {
+                                    "keyPattern": {"created_at": 1},
+                                    "expireAfterSeconds": expire_after_seconds
+                                }
+                            })
+                        ttl_index_exists = True
+                        break
+            
+            if not ttl_index_exists:
+                # Create TTL index on created_at field
+                collection.create_index(
+                    "created_at",
+                    expireAfterSeconds=expire_after_seconds,
+                    name="created_at_1"
+                )
+                logger.info(f"Created TTL index on {collection_name}.created_at (expires after {self.data_ttl_days} days)")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to ensure TTL index on {collection_name}: {e}")
+            return False
+    
+    def _create_collection(self, collection_name: str) -> bool:
+        """Create a new collection with TTL index
+        
+        Args:
+            collection_name: Name of the collection to create
+            
+        Returns:
+            True if collection was created successfully, False otherwise
+        """
+        try:
+            if not self.connected:
+                logger.error("Database not connected")
+                return False
+            
+            if not collection_name:
+                logger.error("Collection name is required")
+                return False
+            
+            # Create collection (MongoDB creates collections lazily, but we can ensure it exists)
+            collection = self.database[collection_name]
+            
+            # Ensure TTL index exists
+            self._ensure_ttl_index(collection_name)
+            
+            logger.info(f"Collection {collection_name} created/verified with TTL index")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to create collection {collection_name}: {e}")
+            return False
+    
+    def _drop_collection(self, collection_name: str) -> bool:
+        """Drop a collection
+        
+        Args:
+            collection_name: Name of the collection to drop
+            
+        Returns:
+            True if collection was dropped successfully, False otherwise
+        """
+        try:
+            if not self.connected:
+                logger.error("Database not connected")
+                return False
+            
+            if not collection_name:
+                logger.error("Collection name is required")
+                return False
+            
+            self.database.drop_collection(collection_name)
+            logger.info(f"Collection {collection_name} dropped")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to drop collection {collection_name}: {e}")
+            return False
+    
+    def _get_database_stats(self) -> Dict[str, Any]:
+        """Get database statistics
+        
+        Returns:
+            Dictionary containing database statistics
+        """
+        try:
+            if not self.connected:
+                return {"error": "Database not connected"}
+            
+            stats = {
+                "database_name": self.database_name,
+                "collections": [],
+                "total_collections": 0,
+                "total_documents": 0
+            }
+            
+            collections = self.database.list_collection_names()
+            stats["total_collections"] = len(collections)
+            
+            for collection_name in collections:
+                collection = self.database[collection_name]
+                count = collection.count_documents({})
+                stats["total_documents"] += count
+                
+                # Get index information
+                indexes = list(collection.list_indexes())
+                ttl_index = None
+                for idx in indexes:
+                    if "expireAfterSeconds" in idx:
+                        ttl_index = {
+                            "field": list(idx["key"].keys())[0],
+                            "expire_after_seconds": idx["expireAfterSeconds"],
+                            "expire_after_days": idx["expireAfterSeconds"] / 86400
+                        }
+                        break
+                
+                collection_info = {
+                    "name": collection_name,
+                    "document_count": count,
+                    "ttl_index": ttl_index
+                }
+                stats["collections"].append(collection_info)
+            
+            logger.info(f"Database stats retrieved: {stats['total_collections']} collections, {stats['total_documents']} documents")
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Failed to get database stats: {e}")
+            return {"error": str(e)}
+    
+    def insert_data(self, collection_name: str, data: Dict[str, Any]) -> bool:
+        """Insert data into collection with TTL
+        
+        Automatically adds created_at field and ensures TTL index exists.
+        Documents will expire after data_ttl_days as configured.
+        
+        Args:
+            collection_name: Name of the collection
+            data: Dictionary containing document data
+            
+        Returns:
+            True if insertion was successful, False otherwise
+        """
+        try:
+            if not self.connected:
+                return False
+            
+            # Ensure TTL index exists on collection
+            self._ensure_ttl_index(collection_name)
+            
+            # Add created_at field for TTL (MongoDB standard pattern)
+            # Use UTC time for consistency
+            data["created_at"] = datetime.datetime.utcnow()
             
             collection = self.database[collection_name]
             result = collection.insert_one(data)
             
-            logger.debug(f"Data inserted into {collection_name}: {result.inserted_id}")
+            logger.debug(f"Data inserted into {collection_name} with ID: {result.inserted_id}")
             return True
             
         except Exception as e:
