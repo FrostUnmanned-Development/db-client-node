@@ -80,24 +80,28 @@ Master Core → IPC Command → DB Client → MongoDB → Response → Master Co
 
 ## TTL Management
 
-The DB Client automatically adds TTL (Time To Live) expiration to all documents:
+The DB Client automatically adds TTL (Time To Live) expiration to all documents using MongoDB's standard TTL pattern:
 
 ### Automatic TTL:
-- **Default TTL**: 7 days (configurable)
+- **Default TTL**: 7 days (configurable via `data_ttl_days`)
 - **Automatic Cleanup**: MongoDB automatically removes expired documents
-- **TTL Index**: Automatic creation of TTL indexes on `ttl_expiration` field
+- **TTL Index**: Automatic creation of TTL indexes on `created_at` field (MongoDB standard)
+- **Field Used**: `created_at` (datetime field added automatically on insert)
 
 ### TTL Configuration:
 ```json
 {
-    "data_ttl_days": 7,  // Default TTL for all documents
-    "collection_ttl": {   // Per-collection TTL overrides
-        "system": 30,     // System logs kept for 30 days
-        "can_data": 7,    // CAN data kept for 7 days
-        "emergency": 90   // Emergency logs kept for 90 days
-    }
+    "data_ttl_days": 7,  // Default TTL for all documents (in days)
+    // For testing with short TTL:
+    // "data_ttl_days": 0.000116,  // 10 seconds
+    // "data_ttl_days": 0.000694,  // 60 seconds (1 minute)
 }
 ```
+
+**TTL Testing Values:**
+- `0.000116` days = 10 seconds
+- `0.000694` days = 60 seconds (1 minute)
+- `0.001` days = 86.4 seconds (~1.4 minutes)
 
 ## Database Operations
 
@@ -114,8 +118,8 @@ ipc_message = {
             "source": 222,
             "dest": 255,
             "fields": [5, None, 31, 0.163, -0.0001, 65535],
-            "timestamp": "2025-10-22T20:53:52.270164",
-            "ttl_expiration": "2025-10-29T20:53:52.270344"
+            "timestamp": "2025-10-22T20:53:52.270164"
+            // Note: created_at field is automatically added by db-client-node
         }
     }
 }
