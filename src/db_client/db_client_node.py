@@ -49,7 +49,8 @@ class DBClientNode(BaseNode):
         self.connected = False
         
         # Data management
-        self.data_ttl_days = config.get("data_ttl_days", 7)
+        # Use get_config_value() for enterprise config hierarchy (Master Core > Local > Default)
+        self.data_ttl_days = self.get_config_value("data_ttl_days", 7)
         self.backup_enabled = config.get("backup_enabled", True)
         self.backup_interval = config.get("backup_interval", 3600)  # 1 hour
         
@@ -65,10 +66,47 @@ class DBClientNode(BaseNode):
         
         logger.info(f"DB Client Node initialized for {self.mongodb_host}:{self.mongodb_port}")
     
+    def on_config_updated(self, config_updates: Dict[str, Any]):
+        """Handle configuration updates from Master Core
+        
+        Called automatically when Master Core sends config updates.
+        Updates TTL settings dynamically.
+        """
+        logger.info(f"🔧 [db_client] on_config_updated() called with: {config_updates}")
+        if "data_ttl_days" in config_updates:
+            old_ttl = self.data_ttl_days
+            self.data_ttl_days = self.get_config_value("data_ttl_days", 7)
+            logger.info(f"✅ [db_client] TTL configuration updated: {old_ttl} -> {self.data_ttl_days} days")
+            logger.info(f"🔧 [db_client] New TTL in seconds: {self.data_ttl_days * 86400}")
+            # Note: Existing TTL indexes will be updated on next insert via _ensure_ttl_index()
+        else:
+            logger.warning(f"⚠️ [db_client] Config updated but data_ttl_days not in updates: {list(config_updates.keys())}")
+    
     def start(self):
         """Start the DB client node"""
         if not super().start():
             return False
+        
+        logger.info(f"🔧 [db_client] Starting configuration setup...")
+        logger.info(f"🔧 [db_client] Current master_core_config: {self.master_core_config}")
+        logger.info(f"🔧 [db_client] Current local config data_ttl_days: {self.config.get('data_ttl_days', 'NOT SET')}")
+        
+        # Request configuration from Master Core (enterprise pattern)
+        logger.info(f"🔧 [db_client] Requesting config from Master Core...")
+        self.request_config_from_master()
+        
+        # Give Master Core a moment to respond (config is async)
+        import time
+        time.sleep(0.5)  # Small delay for config response
+        
+        # Update data_ttl_days from config hierarchy
+        logger.info(f"🔧 [db_client] Getting data_ttl_days from config hierarchy...")
+        logger.info(f"🔧 [db_client] master_core_config after request: {self.master_core_config}")
+        self.data_ttl_days = self.get_config_value("data_ttl_days", 7)
+        
+        config_source = "Master Core" if "data_ttl_days" in self.master_core_config else "local config"
+        logger.info(f"✅ [db_client] DB Client Node using TTL: {self.data_ttl_days} days (from {config_source})")
+        logger.info(f"🔧 [db_client] TTL in seconds: {self.data_ttl_days * 86400}")
         
         # Connect to database
         if self._connect_database():
@@ -497,6 +535,7 @@ class DBClientNode(BaseNode):
         """
         try:
             if not self.connected:
+                logger.error(f"❌ [db_client] Cannot ensure TTL index - not connected to database")
                 return False
             
             collection = self.database[collection_name]
@@ -504,35 +543,61 @@ class DBClientNode(BaseNode):
             # Convert TTL days to seconds (MongoDB TTL uses seconds)
             expire_after_seconds = self.data_ttl_days * 86400  # days * seconds per day
             
+            logger.info(f"🔧 [db_client] _ensure_ttl_index called for '{collection_name}'")
+            logger.info(f"🔧 [db_client] Current data_ttl_days: {self.data_ttl_days}")
+            logger.info(f"🔧 [db_client] Expire after seconds: {expire_after_seconds}")
+            logger.info(f"🔧 [db_client] master_core_config: {self.master_core_config}")
+            logger.info(f"🔧 [db_client] local config data_ttl_days: {self.config.get('data_ttl_days', 'NOT SET')}")
+            
             # Check if TTL index already exists
-            indexes = collection.list_indexes()
+            indexes = list(collection.list_indexes())
+            logger.info(f"🔧 [db_client] Existing indexes on '{collection_name}': {[idx.get('name') for idx in indexes]}")
+            
             ttl_index_exists = False
             for index in indexes:
                 if index.get("name") == "created_at_1":
                     # Check if it's a TTL index
                     if "expireAfterSeconds" in index:
+                        current_ttl = index["expireAfterSeconds"]
+                        logger.info(f"🔧 [db_client] Found existing TTL index: {current_ttl} seconds")
+                        logger.info(f"🔧 [db_client] Desired TTL: {expire_after_seconds} seconds")
+                        
                         # Update if TTL value changed
-                        if index["expireAfterSeconds"] != expire_after_seconds:
-                            logger.info(f"Updating TTL index on {collection_name} from {index['expireAfterSeconds']}s to {expire_after_seconds}s")
+                        if current_ttl != expire_after_seconds:
+                            logger.info(f"🔄 [db_client] Updating TTL index on {collection_name} from {current_ttl}s to {expire_after_seconds}s")
                             # Use collMod to update TTL value
-                            self.database.command({
+                            result = self.database.command({
                                 "collMod": collection_name,
                                 "index": {
                                     "keyPattern": {"created_at": 1},
                                     "expireAfterSeconds": expire_after_seconds
                                 }
                             })
+                            logger.info(f"✅ [db_client] TTL index update result: {result}")
+                        else:
+                            logger.info(f"✅ [db_client] TTL index already correct: {current_ttl}s")
                         ttl_index_exists = True
                         break
             
             if not ttl_index_exists:
                 # Create TTL index on created_at field
+                logger.info(f"🆕 [db_client] Creating new TTL index on {collection_name}.created_at")
+                logger.info(f"🔧 [db_client] expireAfterSeconds: {expire_after_seconds} seconds ({self.data_ttl_days} days)")
                 collection.create_index(
                     "created_at",
                     expireAfterSeconds=expire_after_seconds,
                     name="created_at_1"
                 )
-                logger.info(f"Created TTL index on {collection_name}.created_at (expires after {self.data_ttl_days} days)")
+                logger.info(f"✅ [db_client] Created TTL index on {collection_name}.created_at (expires after {self.data_ttl_days} days = {expire_after_seconds} seconds)")
+            
+            # Verify the index was created/updated correctly
+            indexes = list(collection.list_indexes())
+            for index in indexes:
+                if index.get("name") == "created_at_1" and "expireAfterSeconds" in index:
+                    actual_ttl = index["expireAfterSeconds"]
+                    logger.info(f"✅ [db_client] Verified TTL index: {actual_ttl} seconds (expected: {expire_after_seconds} seconds)")
+                    if actual_ttl != expire_after_seconds:
+                        logger.error(f"❌ [db_client] TTL MISMATCH! Index has {actual_ttl}s but expected {expire_after_seconds}s")
             
             return True
             

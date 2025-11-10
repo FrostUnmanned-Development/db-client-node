@@ -9,7 +9,7 @@
     "mongodb_host": "localhost",
     "mongodb_port": 27017,
     "database_name": "OBSDB",
-    "data_ttl_days": 7,
+    "data_ttl_days": 0.000116,
     "backup_enabled": true,
     "backup_interval": 3600,
     
