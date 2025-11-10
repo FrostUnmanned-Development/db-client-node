@@ -821,37 +821,61 @@ def main():
     node = DBClientNode(config)
     
     if args.daemon:
-        # Run as daemon using simple fork approach
-        import os
-        import sys
+        # Run as daemon (cross-platform)
+        import platform
+        import tempfile
         
-        # Fork the process
-        try:
-            pid = os.fork()
-            if pid > 0:
-                # Parent process - exit
-                sys.exit(0)
-        except OSError as e:
-            logger.error(f"Failed to fork: {e}")
-            sys.exit(1)
-        
-        # Child process - continue
-        os.setsid()  # Create new session
-        os.chdir("/")  # Change to root directory
-        
-        # Write PID file
-        with open('/tmp/db_client_node.pid', 'w') as f:
-            f.write(str(os.getpid()))
-        
-        if node.start():
-            try:
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                pass
+        # Windows doesn't support fork(), so run in background without forking
+        if platform.system() == 'Windows':
+            # Windows: Run in background without forking
+            # Write PID file to temp directory
+            temp_dir = tempfile.gettempdir()
+            pid_file = os.path.join(temp_dir, 'db_client_node.pid')
+            with open(pid_file, 'w') as f:
+                f.write(str(os.getpid()))
+            
+            logger.info(f"Running as background process on Windows (PID: {os.getpid()})")
+            if node.start():
+                try:
+                    while True:
+                        time.sleep(1)
+                except KeyboardInterrupt:
+                    pass
+            else:
+                logger.error("Failed to start DB Client Node")
+                sys.exit(1)
         else:
-            logger.error("Failed to start DB Client Node")
-            sys.exit(1)
+            # Unix/Linux: Use fork approach
+            import os
+            import sys
+            
+            # Fork the process
+            try:
+                pid = os.fork()
+                if pid > 0:
+                    # Parent process - exit
+                    sys.exit(0)
+            except OSError as e:
+                logger.error(f"Failed to fork: {e}")
+                sys.exit(1)
+            
+            # Child process - continue
+            os.setsid()  # Create new session
+            os.chdir("/")  # Change to root directory
+            
+            # Write PID file
+            with open('/tmp/db_client_node.pid', 'w') as f:
+                f.write(str(os.getpid()))
+            
+            if node.start():
+                try:
+                    while True:
+                        time.sleep(1)
+                except KeyboardInterrupt:
+                    pass
+            else:
+                logger.error("Failed to start DB Client Node")
+                sys.exit(1)
     else:
         # Run in foreground
         if node.start():
