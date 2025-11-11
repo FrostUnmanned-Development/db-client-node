@@ -15,6 +15,7 @@ from typing import Dict, Any, Optional, List
 import json
 import os
 import sys
+import signal
 
 # Import BaseNode from template-node submodule
 sys.path.append(str(Path(__file__).parent.parent.parent.parent.parent / "nodes" / "template-node" / "src"))
@@ -778,11 +779,31 @@ class DBClientNode(BaseNode):
         })
         return base_status
 
+# Global variables for signal handler
+_node_instance = None
+_running = True
+
+def signal_handler(signum, frame):
+    """Handle SIGINT and SIGTERM signals for graceful shutdown"""
+    global _running
+    signal_name = signal.Signals(signum).name
+    logger.info(f"Received {signal_name} signal, initiating graceful shutdown...")
+    _running = False
+    if _node_instance:
+        _node_instance.stop()
+
 def main():
     """Main entry point for DB Client Node"""
+    global _node_instance, _running
     import argparse
     import sys
     import os
+    
+    # Register signal handlers for graceful shutdown
+    # SIGINT: Ctrl+C or kill -INT
+    # SIGTERM: systemd/service manager shutdown or kill -TERM
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
     parser = argparse.ArgumentParser(description="DB Client Node")
     parser.add_argument("--config", default="config.json", help="Configuration file")
@@ -819,6 +840,7 @@ def main():
     
     # Create and start node
     node = DBClientNode(config)
+    _node_instance = node  # Store for signal handler
     
     if args.daemon:
         # Run as daemon (cross-platform)
@@ -836,14 +858,18 @@ def main():
             
             logger.info(f"Running as background process on Windows (PID: {os.getpid()})")
             if node.start():
+                _running = True
                 try:
-                    while True:
+                    while _running:
                         time.sleep(1)
                 except KeyboardInterrupt:
-                    pass
+                    # Fallback for KeyboardInterrupt
+                    logger.info("KeyboardInterrupt received, shutting down")
+                    _running = False
             else:
                 logger.error("Failed to start DB Client Node")
                 sys.exit(1)
+            node.stop()
         else:
             # Unix/Linux: Use fork approach
             import os
@@ -868,14 +894,18 @@ def main():
                 f.write(str(os.getpid()))
             
             if node.start():
+                _running = True
                 try:
-                    while True:
+                    while _running:
                         time.sleep(1)
                 except KeyboardInterrupt:
-                    pass
+                    # Fallback for KeyboardInterrupt
+                    logger.info("KeyboardInterrupt received, shutting down")
+                    _running = False
             else:
                 logger.error("Failed to start DB Client Node")
                 sys.exit(1)
+            node.stop()
     else:
         # Run in foreground
         if node.start():
