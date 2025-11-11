@@ -16,7 +16,7 @@
     "known_nodes": {
         "can_controller": {
             "host": "localhost",
-            "port": 14551
+            "port": 14553
         }
     }
 }
