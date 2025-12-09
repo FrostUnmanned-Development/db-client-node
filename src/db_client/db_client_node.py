@@ -361,8 +361,8 @@ class DBClientNode(BaseNode):
             
             # If responding to master_core, use its IPC server address, not the ephemeral port
             if message.source == "master_core":
-                # Master Core IPC server is on port 14551 (not the UDP server on 14550)
-                master_core_addr = (self.master_core_host, 14551)
+                # Master Core IPC server is on port 14553 (not the UDP server on 14551)
+                master_core_addr = (self.master_core_host, 14553)
                 logger.info(f"DEBUG: Sending response to Master Core IPC server at {master_core_addr} (source: {message.source})")
                 self._send_message(response, master_core_addr)
                 logger.info(f"DEBUG: Response sent to Master Core, request_id: {request_id}")
